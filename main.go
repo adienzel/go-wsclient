@@ -56,7 +56,8 @@ func startClient(clientID int, wg *sync.WaitGroup, logger *zap.SugaredLogger) {
 	rand.New(rand.NewSource(int64(clientID))) // maintain the same client id and it will be the same between stoping and stating app
 	id := rand.Intn(max-min+1) + min
 	// Connect to the WebSocket server
-	conn, _, err := websocket.DefaultDialer.Dial(serverURL, nil)
+	addr := fmt.Sprintf("%s/ws/%d", serverURL, id)
+	conn, _, err := websocket.DefaultDialer.Dial(addr, nil)
 	if err != nil {
 		logger.Errorf("Client %d: Error connecting to server: %v", clientID, err)
 		return
@@ -118,7 +119,26 @@ func startClient(clientID int, wg *sync.WaitGroup, logger *zap.SugaredLogger) {
 }
 
 func main() {
-	var Logger zap.SugaredLogger
+
+	var Logger *zap.SugaredLogger
+	var err error
+	level := zap.NewAtomicLevelAt(getLevelLogger(loglevel))
+	encoder := zap.NewProductionEncoderConfig()
+
+	zapConfig := zap.NewProductionConfig()
+	zapConfig.EncoderConfig = encoder
+	zapConfig.Level = level
+	// zapConfig.Development = config.IS_DEVELOP_MODE
+	zapConfig.Encoding = "json"
+	//zapConfig.InitialFields = map[string]interface{}{"idtx": "999"}
+	zapConfig.OutputPaths = []string{"stdout"} // can add later a log file
+	zapConfig.ErrorOutputPaths = []string{"stderr"}
+	logger, err := zapConfig.Build()
+
+	if err != nil {
+		panic(err)
+	}
+	Logger = logger.Sugar()
 
 	Logger.Infof("Starting WebSocket Client: Server URL=%s, Clients=%d, Rate=%.2f messages/sec", serverURL, numClients, messagesPerSecond)
 
@@ -127,7 +147,7 @@ func main() {
 	// Start multiple WebSocket clients
 	for i := 0; i < numClients; i++ {
 		wg.Add(1)
-		go startClient(i+1, &wg, &Logger)
+		go startClient(i+1, &wg, Logger)
 	}
 
 	// Wait for all clients to finish

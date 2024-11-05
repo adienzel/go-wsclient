@@ -16,10 +16,12 @@ import (
 )
 
 var (
-	serverURL         string
-	numClients        int
-	messagesPerSecond float64
-	loglevel          string
+	serverURL            string
+	numClients           int
+	messagesPerSecond    float64
+	loglevel             string
+	maxReconnectAttempts int
+	reconnectDelay       time.Duration
 )
 
 const min int = 10000000
@@ -31,6 +33,9 @@ func init() {
 	flag.IntVar(&numClients, "clients", 1, "Number of WebSocket clients")
 	flag.Float64Var(&messagesPerSecond, "rate", 1.0, "Rate of messages per second")
 	flag.StringVar(&loglevel, "Loglevl", "debug", "Loglevel can be  [error, warning, info, debug] defasult is debug")
+	flag.IntVar(&maxReconnectAttempts, "max-retries", 5, "Max number of reconnect attempts")
+	flag.DurationVar(&reconnectDelay, "reconnect-delay", 5*time.Second, "Delay between reconnect attempts")
+
 	flag.Parse()
 }
 
@@ -49,6 +54,27 @@ func getLevelLogger(loglevel string) zapcore.Level {
 	}
 }
 
+func connectToServer(addr string, clientID int, logger *zap.SugaredLogger) (conn *websocket.Conn, err error) {
+	for attempt := 1; attempt <= maxReconnectAttempts; attempt++ {
+		// Attempt to connect
+		conn, _, err = websocket.DefaultDialer.Dial(addr, nil)
+		if err != nil {
+			logger.Errorf("Client %d: Error connecting to server on attempt %d: %v", clientID, attempt, err)
+			if attempt < maxReconnectAttempts {
+				logger.Infof("Client %d: Retrying in %s...", clientID, reconnectDelay)
+				time.Sleep(reconnectDelay)
+			} else {
+				logger.Errorf("Client %d: Reached max reconnect attempts, exiting.", clientID)
+				return nil, fmt.Errorf("Client %d: Reached max reconnect attempts, exiting.", clientID)
+			}
+		} else {
+			logger.Errorf("Client %d connected to server %s", clientID, serverURL)
+			break
+		}
+	}
+	return conn, nil
+}
+
 // Client function for each WebSocket client
 func startClient(clientID int, wg *sync.WaitGroup, logger *zap.SugaredLogger) {
 	defer wg.Done()
@@ -57,12 +83,18 @@ func startClient(clientID int, wg *sync.WaitGroup, logger *zap.SugaredLogger) {
 	id := rand.Intn(max-min+1) + min
 	// Connect to the WebSocket server
 	addr := fmt.Sprintf("%s/ws/%d", serverURL, id)
-	conn, _, err := websocket.DefaultDialer.Dial(addr, nil)
+	conn, err := connectToServer(addr, clientID, logger)
+	// conn, _, err := websocket.DefaultDialer.Dial(addr, nil)
 	if err != nil {
 		logger.Errorf("Client %d: Error connecting to server: %v", clientID, err)
 		return
 	}
-	defer conn.Close()
+
+	defer func() {
+		if conn != nil {
+			conn.Close()
+		}
+	}()
 
 	logger.Infof("Client %d connected to server %s", clientID, serverURL)
 
@@ -87,6 +119,12 @@ func startClient(clientID int, wg *sync.WaitGroup, logger *zap.SugaredLogger) {
 			// Read messages from the server
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
+					logger.Infof("Client %d: Connection closed by server, attempting to reconnect...", clientID)
+					conn, err = connectToServer(addr, clientID, logger)
+					//maybe to quit if error now
+					break
+				}
 				logger.Errorf("Client %d: Error reading message: %v", clientID, err)
 				return
 			}

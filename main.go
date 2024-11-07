@@ -32,7 +32,7 @@ func init() {
 	flag.StringVar(&serverURL, "url", "ws://localhost:8080", "WebSocket server URL")
 	flag.IntVar(&numClients, "clients", 1, "Number of WebSocket clients")
 	flag.Float64Var(&messagesPerSecond, "rate", 1.0, "Rate of messages per second")
-	flag.StringVar(&loglevel, "Loglevl", "debug", "Loglevel can be  [error, warning, info, debug] defasult is debug")
+	flag.StringVar(&loglevel, "Loglevel", "debug", "Loglevel can be  [error, warning, info, debug] defasult is debug")
 	flag.IntVar(&maxReconnectAttempts, "max-retries", 5, "Max number of reconnect attempts")
 	flag.DurationVar(&reconnectDelay, "reconnect-delay", 5*time.Second, "Delay between reconnect attempts")
 
@@ -47,7 +47,7 @@ func getLevelLogger(loglevel string) zapcore.Level {
 		return zap.InfoLevel
 	case loglevel == "warning":
 		return zap.WarnLevel
-	case loglevel == "errpr":
+	case loglevel == "error":
 		return zap.ErrorLevel
 	default:
 		return zap.DebugLevel
@@ -65,7 +65,7 @@ func connectToServer(addr string, clientID int, logger *zap.SugaredLogger) (conn
 				time.Sleep(reconnectDelay)
 			} else {
 				logger.Errorf("Client %d: Reached max reconnect attempts, exiting.", clientID)
-				return nil, fmt.Errorf("Client %d: Reached max reconnect attempts, exiting.", clientID)
+				return nil, fmt.Errorf("client %d: reached max reconnect attempts, exiting", clientID)
 			}
 		} else {
 			logger.Errorf("Client %d connected to server %s", clientID, serverURL)

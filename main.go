@@ -159,14 +159,22 @@ func startClient(clientID int, wg *sync.WaitGroup, logger *zap.SugaredLogger) {
 			// Read messages from the server
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
+				logger.Errorf("Client %d: Error reading message: %v", clientID, err)
 				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
 					logger.Infof("Client %d: Connection closed by server, attempting to reconnect...", clientID)
 					conn, err = connectToServer(addr, clientID, logger)
-					//maybe to quit if error now
-					break
+					if err != nil {
+						logger.Errorf("Client %d: failed to reconnect: %v", clientID, err)
+						return
+					}
+					logger.Infof("Client %d reconnected ", clientID)
 				}
-				logger.Errorf("Client %d: Error reading message: %v", clientID, err)
-				return
+				continue // connection success will read in next loop
+				// _, msg, err = conn.ReadMessage()
+				// if err != nil {
+				// 	logger.Errorf("Client %d: Error reading message: %v", clientID, err)
+				// 	return
+				// }
 			}
 
 			// Handle incoming message

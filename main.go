@@ -1,10 +1,10 @@
 package main
 
 import (
-	"flag"
 	"fmt"
+	"os"
+	"strconv"
 
-	//"log"
 	"math/rand"
 	"sync"
 	"time"
@@ -27,16 +27,56 @@ var (
 const min int = 10000000
 const max int = 99999999
 
+func lookupEnvString(env string, defaultParam string) string {
+	param, found := os.LookupEnv(env)
+	if !found {
+		param = defaultParam
+	}
+	return param
+}
+
+func lookupEnvint64(env string, defaultParam int64) int64 {
+	param, found := os.LookupEnv(env)
+	if !found {
+		param = strconv.FormatInt(int64(defaultParam), 10)
+	}
+	i, err := strconv.ParseInt(param, 10, 64)
+	if err != nil {
+		i = 1
+	}
+	return i
+}
+
+func lookupEnvFloat64(env string, defaultParam float64) float64 {
+	param, found := os.LookupEnv(env)
+	if !found {
+		param = fmt.Sprintf("%f", defaultParam)
+	}
+	i, err := strconv.ParseFloat(param, 64)
+	if err != nil {
+		i = 1
+	}
+	return i
+}
+
 func init() {
 	// CLI flags for the application
-	flag.StringVar(&serverURL, "url", "ws://localhost:8080", "WebSocket server URL")
-	flag.IntVar(&numClients, "clients", 1, "Number of WebSocket clients")
-	flag.Float64Var(&messagesPerSecond, "rate", 1.0, "Rate of messages per second")
-	flag.StringVar(&loglevel, "Loglevel", "debug", "Loglevel can be  [error, warning, info, debug] defasult is debug")
-	flag.IntVar(&maxReconnectAttempts, "max-retries", 5, "Max number of reconnect attempts")
-	flag.DurationVar(&reconnectDelay, "reconnect-delay", 5*time.Second, "Delay between reconnect attempts")
+	// # define Environment Variable
 
-	flag.Parse()
+	server := lookupEnvString("WSC_SERVER", "127.0.0.1")
+	sport := lookupEnvString("WSC_PORT", "8990")
+	serverURL = server + ":" + sport
+
+	numClients = int(lookupEnvint64("WSC_NUMBER_OF_CLIENTS", int64(1)))
+
+	// # Float number smaller than 1.0 is smaller than 1per secnd and larger means the number of messages per second
+	// # it is calculated as 1/WS_MESSAGES_PER_SECOND for the time delay between messages
+	messagesPerSecond = lookupEnvFloat64("WSC_MESSAGES_PER_SECOND", 1.0)
+
+	loglevel = lookupEnvString("WSC_LOG_LEVEL", "debug")
+
+	maxReconnectAttempts = int(lookupEnvint64("WSC_MAX_RECONNECT_ATTEMPT", int64(10)))
+	reconnectDelay = time.Duration((lookupEnvint64("WSC_DELAY_BETWEEN_RECONNECT", int64(5))))
 }
 
 func getLevelLogger(loglevel string) zapcore.Level {

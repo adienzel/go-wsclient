@@ -27,6 +27,19 @@ COPY --from=builder /app/wsclient .
 
 # Make the binary executable
 RUN chmod +x wsclient
+
+# define Environment Variable
+ENV WSC_SERVER=127.0.0.1
+ENV WSC_PORT=8990
+ENV WSC_NUMBER_OFCLIENTS=10
+# Float number smaller than 1.0 is smaller than 1per secnd and larger means the number of messages per second
+# it is calculated as 1/WS_MESSAGES_PER_SECOND for the time delay between messages
+ENV WSC_MESSAGES_PER_SECOND=1.0 
+ENV WSC_LOG_LEVEL="debug"
+ENV WSC_MAX_RECONNECT_ATTEMPT=10
+# Delay in seconds
+ENV WSC_DELAY_BETWEEN_RECONNECT=5
+
 # Define the entrypoint for the container (the Go binary)
 ENTRYPOINT ["./wsclient"]
 
@@ -34,4 +47,4 @@ ENTRYPOINT ["./wsclient"]
 EXPOSE 8080
 
 # Default command if no args are provided
-CMD ["-server", "http://localhost:8890", "-clients", "2", "-rate", "1.0", "-version", "V1.0", "-loglevel", "debug",]
+CMD []

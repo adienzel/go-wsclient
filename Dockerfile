@@ -30,8 +30,9 @@ RUN chmod +x wsclient
 
 # define Environment Variable
 ENV WSC_SERVER=127.0.0.1
-ENV WSC_PORT=8990
-ENV WSC_NUMBER_OFCLIENTS=10
+ENV WSC_PORT=8020
+ENV WSC_NUMBER_OF_PORTS=100
+ENV WSC_NUMBER_OFCLIENTS=100
 # Float number smaller than 1.0 is smaller than 1per secnd and larger means the number of messages per second
 # it is calculated as 1/WS_MESSAGES_PER_SECOND for the time delay between messages
 ENV WSC_MESSAGES_PER_SECOND=1.0 

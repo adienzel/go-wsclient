@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"strconv"
+	// "os"
+	// "strconv"
 
 	"math/rand"
 	"sync"
@@ -16,8 +16,10 @@ import (
 )
 
 var (
-	serverURL            string
+	server               string
+	port                 uint16
 	numClients           int
+	numOfPorts           uint16
 	messagesPerSecond    float64
 	loglevel             string
 	maxReconnectAttempts int
@@ -27,45 +29,29 @@ var (
 const min int = 10000000
 const max int = 99999999
 
-func lookupEnvString(env string, defaultParam string) string {
-	param, found := os.LookupEnv(env)
-	if !found {
-		param = defaultParam
-	}
-	return param
-}
+type State int
 
-func lookupEnvint64(env string, defaultParam int64) int64 {
-	param, found := os.LookupEnv(env)
-	if !found {
-		param = strconv.FormatInt(int64(defaultParam), 10)
-	}
-	i, err := strconv.ParseInt(param, 10, 64)
-	if err != nil {
-		i = 1
-	}
-	return i
-}
+const (
+	CLOSE_STATE State = iota
+	OPEN_STATE
+)
 
-func lookupEnvFloat64(env string, defaultParam float64) float64 {
-	param, found := os.LookupEnv(env)
-	if !found {
-		param = fmt.Sprintf("%f", defaultParam)
-	}
-	i, err := strconv.ParseFloat(param, 64)
-	if err != nil {
-		i = 1
-	}
-	return i
+type Connections struct {
+	id        int
+	state     State
+	client_id int
+	addr      string
+	conn      *websocket.Conn
 }
 
 func init() {
 	// CLI flags for the application
 	// # define Environment Variable
 
-	server := lookupEnvString("WSC_SERVER", "127.0.0.1")
-	sport := lookupEnvString("WSC_PORT", "8990")
-	serverURL = server + ":" + sport
+	server = lookupEnvString("WSC_SERVER", "127.0.0.1")
+	port = uint16(lookupEnvint64("WSC_PORT", 8020))
+	numOfPorts = uint16(lookupEnvint64("WSC_NUMBER_OF_PORTS", 100))
+	//serverURL = server + ":" + sport
 
 	numClients = int(lookupEnvint64("WSC_NUMBER_OF_CLIENTS", int64(1)))
 
@@ -108,35 +94,114 @@ func connectToServer(addr string, clientID int, logger *zap.SugaredLogger) (conn
 				return nil, fmt.Errorf("client %d: reached max reconnect attempts, exiting", clientID)
 			}
 		} else {
-			logger.Errorf("Client %d connected to server %s", clientID, serverURL)
+			logger.Errorf("Client %d connected to server %s", clientID, addr)
 			break
 		}
 	}
 	return conn, nil
 }
 
-// Client function for each WebSocket client
-func startClient(clientID int, wg *sync.WaitGroup, logger *zap.SugaredLogger) {
-	defer wg.Done()
+func cleanConnections(connction_list *[]Connections, logger *zap.SugaredLogger) {
+	for _, e := range *connction_list {
+		if e.conn != nil {
+			err := e.conn.Close()
+			if err != nil {
+				logger.Errorf("Failed to close connection: %v", err)
+			}
+		}
+	}
+	logger.Info("All connections closed.")
+}
 
-	rand.New(rand.NewSource(int64(clientID))) // maintain the same client id and it will be the same between stoping and stating app
-	id := rand.Intn(max-min+1) + min
-	// Connect to the WebSocket server
-	addr := fmt.Sprintf("%s/ws/%d", serverURL, id)
-	conn, err := connectToServer(addr, clientID, logger)
-	// conn, _, err := websocket.DefaultDialer.Dial(addr, nil)
+func (e *Connections) readMessage(logger *zap.SugaredLogger) (message_type int, msg []byte, err error) {
+	message_type, msg, err = e.conn.ReadMessage()
 	if err != nil {
-		logger.Errorf("Client %d: Error connecting to server: %v", clientID, err)
-		return
+		logger.Errorf("Client %d: Error reading message: %v", e.client_id, err)
+		if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
+			logger.Infof("Client %d: Connection closed by server, attempting to reconnect...", e.client_id)
+			e.conn, err = connectToServer(e.addr, e.client_id, logger)
+			if err != nil {
+				logger.Errorf("Client %d: failed to reconnect: %v", e.client_id, err)
+				return message_type, nil, fmt.Errorf("Client %d: failed to reconnect: %v", e.client_id, err)
+			}
+			logger.Infof("Client %d reconnected ", e.client_id)
+			return message_type, nil, fmt.Errorf("Client %d reconnected ", e.client_id) // if there was a message it losted
+		}
 	}
 
-	defer func() {
-		if conn != nil {
-			conn.Close()
+	// Handle incoming message
+	// Handle ping from server
+	switch message_type {
+	case websocket.PingMessage:
+		logger.Debugf("Client %d: Responding to ping", e.client_id)
+		err := e.conn.WriteMessage(websocket.PongMessage, []byte("pong"))
+		if err != nil {
+			return message_type, msg, fmt.Errorf("Client %d vin %d: Error responding to ping: %v", e.client_id, e.id, err)
 		}
-	}()
+		return message_type, msg, nil // wwe need to test thhat this is ping to avoid sending something
+	case websocket.PongMessage:
+		return message_type, msg, nil // wwe need to test thhat this is ping to avoid sending something
+	default:
+		logger.Debugf("Client %d vin %d: Received message: %s", e.client_id, e.id, string(msg))
+		return message_type, msg, fmt.Errorf("Client %d vin %d: Error responding to ping: %v", e.client_id, e.id, err)
+		// we need to test thhat this is ping to avoid sending something
+	}
+}
 
-	logger.Infof("Client %d connected to server %s", clientID, serverURL)
+func (e *Connections) sendMessage(msg []byte, logger *zap.SugaredLogger) (err error) {
+	// Respond to requests from the server with a message containing the timestamp
+	if len(msg) > 0 {
+		t := time.Now()
+		timestampMessage := fmt.Sprintf("%d|%d.%d|%s", e.id, t.Unix(), t.Nanosecond(), string(msg))
+		err = e.conn.WriteMessage(websocket.TextMessage, []byte(timestampMessage))
+		if err != nil {
+			logger.Debugf("Client %d vin %d: Error sending timestamp message: %v", e.client_id, e.id, err)
+			return fmt.Errorf("Client %d vin %d: Error sending timestamp message: %v", e.client_id, e.id, err)
+		}
+		logger.Debugf("Client %d: Sent timestamp message: %s", e.client_id, timestampMessage)
+	}
+	return nil
+}
+
+func createConnections(connction_list *[]Connections, server_port uint16, startClientID int, numberOfClients int, logger *zap.SugaredLogger) bool {
+	rand.New(rand.NewSource(int64(startClientID))) // maintain the same client id and it will be the same between stoping and stating app
+	//TODO define list to hold connections
+	for i := startClientID; i < startClientID+numberOfClients; i++ {
+		var conn_entry Connections
+		id := rand.Intn(max-min+1) + min
+		// Connect to the WebSocket server
+		addr := fmt.Sprintf("%s:%d/ws/%d", server, server_port, id)
+		conn, err := connectToServer(addr, startClientID+i, logger)
+		// conn, _, err := websocket.DefaultDialer.Dial(addr, nil)
+		if err != nil {
+			logger.Errorf("Client %d: Error connecting to server: %v", startClientID+i, err)
+			defer cleanConnections(connction_list, logger)
+			return false
+		}
+
+		conn_entry.id = id
+		conn_entry.state = OPEN_STATE
+		conn_entry.client_id = startClientID + i
+		conn_entry.addr = addr
+		conn_entry.conn = conn
+
+		*connction_list = append(*connction_list, conn_entry)
+		logger.Infof("Client %d connected to server %s:%d", startClientID+i, server, port+uint16(i))
+
+	}
+	return true
+}
+
+// Client function for each WebSocket client
+func startClient(server_port uint16, startClientID int, numberOfClients int, wg *sync.WaitGroup, logger *zap.SugaredLogger) {
+	defer wg.Done()
+
+	var connction_list []Connections
+	defer cleanConnections(&connction_list, logger)
+
+	if !createConnections(&connction_list, server_port, startClientID, numberOfClients, logger) {
+		return
+	}
 
 	// Send messages at the defined rate
 	ticker := time.NewTicker(time.Second / time.Duration(messagesPerSecond))
@@ -146,59 +211,35 @@ func startClient(clientID int, wg *sync.WaitGroup, logger *zap.SugaredLogger) {
 		select {
 		case <-ticker.C:
 			// Send a message
-			t := time.Now()
-
-			message := fmt.Sprintf("%d:%d.%d", id, t.Unix(), t.Nanosecond())
-			if err := conn.WriteMessage(websocket.TextMessage, []byte(message)); err != nil {
-				logger.Errorf("Client %d: Error sending message: %v", clientID, err)
-				return
+			for _, e := range connction_list {
+				t := time.Now()
+				message := fmt.Sprintf("%d:%d.%d", e.id, t.Unix(), t.Nanosecond())
+				if err := e.conn.WriteMessage(websocket.TextMessage, []byte(message)); err != nil {
+					logger.Errorf("Client %d: Error sending message: %v", e.client_id, err)
+					return
+				}
+				logger.Debugf("Client %d: Message sent: %s", e.client_id, message)
 			}
-			logger.Infof("Client %d: Message sent: %s", clientID, message)
-
 		default:
 			// Read messages from the server
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				logger.Errorf("Client %d: Error reading message: %v", clientID, err)
-				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseAbnormalClosure) {
-					logger.Infof("Client %d: Connection closed by server, attempting to reconnect...", clientID)
-					conn, err = connectToServer(addr, clientID, logger)
-					if err != nil {
-						logger.Errorf("Client %d: failed to reconnect: %v", clientID, err)
-						return
+			for _, e := range connction_list {
+				message_type, msg, err := e.readMessage(logger)
+				if err != nil {
+					if message_type == websocket.PingMessage || message_type == websocket.PongMessage {
+						continue
+					} else {
+						logger.Errorf("got error reading message %v", err)
+						//TODO  add counter on error messages
+						continue
 					}
-					logger.Infof("Client %d reconnected ", clientID)
 				}
-				continue // connection success will read in next loop
-				// _, msg, err = conn.ReadMessage()
-				// if err != nil {
-				// 	logger.Errorf("Client %d: Error reading message: %v", clientID, err)
-				// 	return
-				// }
-			}
 
-			// Handle incoming message
-			logger.Infof("Client %d vin %d: Received message: %s", clientID, id, string(msg))
-			// Handle ping from server
-			if string(msg) == "ping" {
-				logger.Debugf("Client %d: Responding to ping", clientID)
-				err := conn.WriteMessage(websocket.PongMessage, []byte("pong"))
-				if err != nil {
-					logger.Errorf("Client %d vin %d: Error responding to ping: %v", clientID, id, err)
-					return
+				if len(msg) > 0 {
+					// will need to check if responsae or RPC request
+					if message_type == websocket.TextMessage {
+						err = e.sendMessage(msg, logger)
+					}
 				}
-			}
-
-			// Respond to requests from the server with a message containing the timestamp
-			if len(msg) > 0 {
-				t := time.Now()
-				timestampMessage := fmt.Sprintf("%d|%d.%d|%s", id, t.Unix(), t.Nanosecond(), string(msg))
-				err := conn.WriteMessage(websocket.TextMessage, []byte(timestampMessage))
-				if err != nil {
-					logger.Errorf("Client %d vin %d: Error sending timestamp message: %v", clientID, id, err)
-					return
-				}
-				logger.Infof("Client %d: Sent timestamp message: %s", clientID, timestampMessage)
 			}
 		}
 	}
@@ -226,14 +267,23 @@ func main() {
 	}
 	Logger = logger.Sugar()
 
-	Logger.Infof("Starting WebSocket Client: Server URL=%s, Clients=%d, Rate=%.2f messages/sec", serverURL, numClients, messagesPerSecond)
+	if numOfPorts == 0 {
+		panic(fmt.Errorf("Number of ports is 0"))
+	}
+
+	if numOfPorts > uint16(numClients) {
+		numClients = int(numOfPorts)
+	}
+	Logger.Infof("Starting WebSocket Client: Server URL=%s, Clients=%d, Rate=%.2f messages/sec",
+		server, numClients, messagesPerSecond)
 
 	var wg sync.WaitGroup
 
 	// Start multiple WebSocket clients
-	for i := 0; i < numClients; i++ {
+
+	for i := 0; i < int(numOfPorts); i++ {
 		wg.Add(1)
-		go startClient(i+1, &wg, Logger)
+		go startClient(port+uint16(i), i, numClients/int(numOfPorts), &wg, Logger)
 	}
 
 	// Wait for all clients to finish

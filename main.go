@@ -1,7 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"sort"
+
 	// "os"
 	// "strconv"
 
@@ -28,6 +33,9 @@ var (
 
 const min int = 10000000
 const max int = 99999999
+const req = "REQ"
+const res = "RES"
+const delimiter = "|"
 
 type State int
 
@@ -42,6 +50,29 @@ type Connections struct {
 	client_id int
 	addr      string
 	conn      *websocket.Conn
+}
+
+type json_message struct {
+	Version            string `json:"version" validate:"required"`
+	Message_type       string `json:"MessageType" validate:"required"`
+	Command            string `json:"command" validate:"required"`
+	Counter            uint64 `json:"MessageNumber" validate:"required"`
+	StartTime_seconds  uint64 `json:"StartTimeSeconds" validate:"required"`
+	StartTime_nanosec  uint64 `json:"StartTimeNano" validate:"required"`
+	RcvTime_seconds    uint64 `json:"RcvTimeSeconds"`
+	RcvTime_nanosec    uint64 `json:"RcvTimeNano"`
+	Ws_seconds_seconds uint64 `json:"WsSeconds"`
+    Ws_nanosec         uint64 `json:"WsNano"`
+	Vin                string `json:"VIN" validate:"required"`
+	Msg                string `json:"msg"` 
+}
+
+func SortDuration(durations []time.Duration) []time.Duration {
+	 // Sort the slice of durations 
+	 sort.Slice(durations, func(i, j int) bool {
+		    return durations[i] < durations[j] 
+		}) 
+	 return durations 
 }
 
 func init() {
@@ -66,6 +97,7 @@ func init() {
 }
 
 func getLevelLogger(loglevel string) zapcore.Level {
+
 	switch {
 	case loglevel == "debug":
 		return zap.DebugLevel
@@ -152,8 +184,28 @@ func (e *Connections) sendMessage(msg []byte, logger *zap.SugaredLogger) (err er
 	// Respond to requests from the server with a message containing the timestamp
 	if len(msg) > 0 {
 		t := time.Now()
-		timestampMessage := fmt.Sprintf("%d|%d.%d|%s", e.id, t.Unix(), t.Nanosecond(), string(msg))
-		err = e.conn.WriteMessage(websocket.TextMessage, []byte(timestampMessage))
+		seconds := make([]byte, 8)
+		nano_seconds := make([]byte, 8)
+		eid := make([]byte, 8)
+		binary.BigEndian.PutUint64(seconds, uint64(t.Unix()))
+		binary.BigEndian.PutUint64(nano_seconds, uint64(t.Nanosecond()))
+		binary.BigEndian.PutUint64(eid, uint64(e.id))
+		
+		point := []byte(".")
+		position := -1
+		position = bytes.Index(msg, []byte(delimiter))
+
+		timestampMessage := append(msg[:position +1], 
+			                    append(seconds, 
+								append(point,
+								append(nano_seconds,
+								append([]byte(delimiter),
+								append(eid,
+								append([]byte(delimiter),	
+								msg[position + 1:]...)...)...)...)...)...)...)
+
+		// timestampMessage := fmt.Sprintf("%d|%d.%d|%s", e.id, t.Unix(), t.Nanosecond(), string(msg))
+		err = e.conn.WriteMessage(websocket.TextMessage, timestampMessage)
 		if err != nil {
 			logger.Debugf("Client %d vin %d: Error sending timestamp message: %v", e.client_id, e.id, err)
 			return fmt.Errorf("client %d vin %d: error sending timestamp message: %v", e.client_id, e.id, err)
@@ -199,6 +251,8 @@ func startClient(server_port uint16, startClientID int, numberOfClients int, wg 
 	var connction_list []Connections
 	defer cleanConnections(&connction_list, logger)
 
+	durations := []time.Duration{}
+
 	if !createConnections(&connction_list, server_port, startClientID, numberOfClients, logger) {
 		return
 	}
@@ -213,7 +267,7 @@ func startClient(server_port uint16, startClientID int, numberOfClients int, wg 
 			// Send a message
 			for _, e := range connction_list {
 				t := time.Now()
-				message := fmt.Sprintf("%d:%d.%d", e.id, t.Unix(), t.Nanosecond())
+				message := fmt.Sprintf("REQ|%d:%d.%d", e.id, t.Unix(), t.Nanosecond())
 				if err := e.conn.WriteMessage(websocket.TextMessage, []byte(message)); err != nil {
 					logger.Errorf("Client %d: Error sending message: %v", e.client_id, err)
 					return
@@ -234,12 +288,43 @@ func startClient(server_port uint16, startClientID int, numberOfClients int, wg 
 					}
 				}
 
-				if len(msg) > 0 {
-					// will need to check if responsae or RPC request
-					if message_type == websocket.TextMessage {
-						_ = e.sendMessage(msg, logger)
-					}
+				if len(msg) == 0 {
+					continue
 				}
+
+				// will need to check if responsae or RPC request
+				if message_type == websocket.TextMessage {
+					var msgBody json_message
+					if err = json.Unmarshal(msg, &msgBody); err != nil {
+						logger.Errorf("client %d: error unmarshalling response: %v", e.client_id, err)
+						return
+					}
+					if msgBody.Message_type == req {
+						timestamp := time.Now()
+
+						msgBody.Message_type = res
+						msgBody.RcvTime_seconds = uint64(timestamp.Second())
+						msgBody.RcvTime_nanosec = uint64(timestamp.Nanosecond())
+						msgBody.Vin = fmt.Sprintf("%d",e.id)
+						msgBody.Msg = "098765432210987654321"
+					    ret_msg, err := json.Marshal(msgBody)
+						if err != nil {
+							logger.Errorf("client %d: error marshalling response: %v", e.client_id, err)
+						}
+						_ = e.sendMessage(ret_msg, logger)
+					} else if msgBody.Message_type == res {
+
+						start := time.Unix(int64(msgBody.StartTime_seconds), int64(msgBody.StartTime_nanosec))
+						durations = append(durations, time.Now().Sub(start))
+						
+
+
+					}
+			
+				} else if message_type == websocket.BinaryMessage {
+					logger.Info("binery is not supported yet")
+				}
+				
 			}
 		}
 	}

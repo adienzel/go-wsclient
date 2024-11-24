@@ -122,10 +122,10 @@ func (e *Connections) readMessage(logger *zap.SugaredLogger) (message_type int, 
 			e.conn, err = connectToServer(e.addr, e.client_id, logger)
 			if err != nil {
 				logger.Errorf("Client %d: failed to reconnect: %v", e.client_id, err)
-				return message_type, nil, fmt.Errorf("Client %d: failed to reconnect: %v", e.client_id, err)
+				return message_type, nil, fmt.Errorf("client %d: failed to reconnect: %v", e.client_id, err)
 			}
 			logger.Infof("Client %d reconnected ", e.client_id)
-			return message_type, nil, fmt.Errorf("Client %d reconnected ", e.client_id) // if there was a message it losted
+			return message_type, nil, fmt.Errorf("client %d reconnected ", e.client_id) // if there was a message it losted
 		}
 	}
 
@@ -136,14 +136,14 @@ func (e *Connections) readMessage(logger *zap.SugaredLogger) (message_type int, 
 		logger.Debugf("Client %d: Responding to ping", e.client_id)
 		err := e.conn.WriteMessage(websocket.PongMessage, []byte("pong"))
 		if err != nil {
-			return message_type, msg, fmt.Errorf("Client %d vin %d: Error responding to ping: %v", e.client_id, e.id, err)
+			return message_type, msg, fmt.Errorf("client %d vin %d: Error responding to ping: %v", e.client_id, e.id, err)
 		}
 		return message_type, msg, nil // wwe need to test thhat this is ping to avoid sending something
 	case websocket.PongMessage:
 		return message_type, msg, nil // wwe need to test thhat this is ping to avoid sending something
 	default:
 		logger.Debugf("Client %d vin %d: Received message: %s", e.client_id, e.id, string(msg))
-		return message_type, msg, fmt.Errorf("Client %d vin %d: Error responding to ping: %v", e.client_id, e.id, err)
+		return message_type, msg, fmt.Errorf("client %d vin %d: error responding to ping: %v", e.client_id, e.id, err)
 		// we need to test thhat this is ping to avoid sending something
 	}
 }
@@ -156,7 +156,7 @@ func (e *Connections) sendMessage(msg []byte, logger *zap.SugaredLogger) (err er
 		err = e.conn.WriteMessage(websocket.TextMessage, []byte(timestampMessage))
 		if err != nil {
 			logger.Debugf("Client %d vin %d: Error sending timestamp message: %v", e.client_id, e.id, err)
-			return fmt.Errorf("Client %d vin %d: Error sending timestamp message: %v", e.client_id, e.id, err)
+			return fmt.Errorf("client %d vin %d: error sending timestamp message: %v", e.client_id, e.id, err)
 		}
 		logger.Debugf("Client %d: Sent timestamp message: %s", e.client_id, timestampMessage)
 	}
@@ -218,7 +218,7 @@ func startClient(server_port uint16, startClientID int, numberOfClients int, wg 
 					logger.Errorf("Client %d: Error sending message: %v", e.client_id, err)
 					return
 				}
-				logger.Debugf("Client %d: Message sent: %s", e.client_id, message)
+				logger.Debugf("client %d: message sent: %s", e.client_id, message)
 			}
 		default:
 			// Read messages from the server
@@ -237,7 +237,7 @@ func startClient(server_port uint16, startClientID int, numberOfClients int, wg 
 				if len(msg) > 0 {
 					// will need to check if responsae or RPC request
 					if message_type == websocket.TextMessage {
-						err = e.sendMessage(msg, logger)
+						_ = e.sendMessage(msg, logger)
 					}
 				}
 			}
@@ -268,7 +268,7 @@ func main() {
 	Logger = logger.Sugar()
 
 	if numOfPorts == 0 {
-		panic(fmt.Errorf("Number of ports is 0"))
+		panic(fmt.Errorf("number of ports is 0"))
 	}
 
 	if numOfPorts > uint16(numClients) {

@@ -1,14 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"sort"
-
-	// "os"
-	// "strconv"
 
 	"math/rand"
 	"sync"
@@ -61,8 +56,10 @@ type json_message struct {
 	StartTime_nanosec  uint64 `json:"StartTimeNano" validate:"required"`
 	RcvTime_seconds    uint64 `json:"RcvTimeSeconds"`
 	RcvTime_nanosec    uint64 `json:"RcvTimeNano"`
-	Ws_seconds_seconds uint64 `json:"WsSeconds"`
-    Ws_nanosec         uint64 `json:"WsNano"`
+	Ws_Up_seconds      uint64 `json:"WsUpSeconds"`
+    Ws_Up_nanosec      uint64 `json:"WsUpNano"`
+	Ws_Dn_seconds      uint64 `json:"WsDnSeconds"`
+    Ws_Dn_nanosec      uint64 `json:"WsDnNano"`
 	Vin                string `json:"VIN" validate:"required"`
 	Msg                string `json:"msg"` 
 }
@@ -183,34 +180,12 @@ func (e *Connections) readMessage(logger *zap.SugaredLogger) (message_type int, 
 func (e *Connections) sendMessage(msg []byte, logger *zap.SugaredLogger) (err error) {
 	// Respond to requests from the server with a message containing the timestamp
 	if len(msg) > 0 {
-		t := time.Now()
-		seconds := make([]byte, 8)
-		nano_seconds := make([]byte, 8)
-		eid := make([]byte, 8)
-		binary.BigEndian.PutUint64(seconds, uint64(t.Unix()))
-		binary.BigEndian.PutUint64(nano_seconds, uint64(t.Nanosecond()))
-		binary.BigEndian.PutUint64(eid, uint64(e.id))
-		
-		point := []byte(".")
-		position := -1
-		position = bytes.Index(msg, []byte(delimiter))
-
-		timestampMessage := append(msg[:position +1], 
-			                    append(seconds, 
-								append(point,
-								append(nano_seconds,
-								append([]byte(delimiter),
-								append(eid,
-								append([]byte(delimiter),	
-								msg[position + 1:]...)...)...)...)...)...)...)
-
-		// timestampMessage := fmt.Sprintf("%d|%d.%d|%s", e.id, t.Unix(), t.Nanosecond(), string(msg))
-		err = e.conn.WriteMessage(websocket.TextMessage, timestampMessage)
+		err = e.conn.WriteMessage(websocket.TextMessage, msg)
 		if err != nil {
 			logger.Debugf("Client %d vin %d: Error sending timestamp message: %v", e.client_id, e.id, err)
 			return fmt.Errorf("client %d vin %d: error sending timestamp message: %v", e.client_id, e.id, err)
 		}
-		logger.Debugf("Client %d: Sent timestamp message: %s", e.client_id, timestampMessage)
+		logger.Debugf("Client %d: Sent timestamp message: %s", e.client_id, msg)
 	}
 	return nil
 }
@@ -250,25 +225,46 @@ func startClient(server_port uint16, startClientID int, numberOfClients int, wg 
 
 	var connction_list []Connections
 	defer cleanConnections(&connction_list, logger)
+	durationChannel := make(chan time.Duration)
+	statsChannel := make(chan []time.Duration)
+	
+	//durations := []time.Duration{}
 
-	durations := []time.Duration{}
 
 	if !createConnections(&connction_list, server_port, startClientID, numberOfClients, logger) {
 		return
 	}
+	
+	go collectDurations(durationChannel, statsChannel)
+
+    go periodicStatistics(server_port, statsChannel, time.Duration(time.Duration.Seconds(60)), logger)
 
 	// Send messages at the defined rate
 	ticker := time.NewTicker(time.Second / time.Duration(messagesPerSecond))
 	defer ticker.Stop()
-
+    var count uint64 = 0
 	for {
 		select {
 		case <-ticker.C:
 			// Send a message
 			for _, e := range connction_list {
+				var message []byte
 				t := time.Now()
-				message := fmt.Sprintf("REQ|%d:%d.%d", e.id, t.Unix(), t.Nanosecond())
-				if err := e.conn.WriteMessage(websocket.TextMessage, []byte(message)); err != nil {
+				var msgBody json_message
+				msgBody.Message_type = req
+				msgBody.Version = "V1.0"
+				msgBody.Command = "temprature"
+				msgBody.Counter = count
+				msgBody.StartTime_seconds = uint64(t.Second())
+				msgBody.StartTime_nanosec = uint64(t.Nanosecond())
+				msgBody.Vin = fmt.Sprintf("%d",e.id)
+				msgBody.Msg = "12345"
+
+				if err := json.Unmarshal(message, &msgBody); err != nil {
+					logger.Errorf("client %d: error unmarshalling response: %v", e.client_id, err)
+					return
+				}
+				if err := e.conn.WriteMessage(websocket.TextMessage, message); err != nil {
 					logger.Errorf("Client %d: Error sending message: %v", e.client_id, err)
 					return
 				}
@@ -314,11 +310,9 @@ func startClient(server_port uint16, startClientID int, numberOfClients int, wg 
 						_ = e.sendMessage(ret_msg, logger)
 					} else if msgBody.Message_type == res {
 
-						start := time.Unix(int64(msgBody.StartTime_seconds), int64(msgBody.StartTime_nanosec))
-						durations = append(durations, time.Now().Sub(start))
-						
-
-
+						//start := time.Unix(int64(msgBody.StartTime_seconds), int64(msgBody.StartTime_nanosec))
+						t := time.Now()
+						durationChannel <- t.Sub(time.Unix(int64(msgBody.StartTime_seconds), int64(msgBody.StartTime_nanosec)))
 					}
 			
 				} else if message_type == websocket.BinaryMessage {
